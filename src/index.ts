@@ -358,9 +358,9 @@ class TranscriptionManager {
         return photo.photoData;
       } else {
         if (photo?.promise) {
-          // wait up to 3 seconds for promise to resolve
+          // wait up to 5 seconds for promise to resolve
           this.logger.debug("Waiting for photo to resolve");
-          const result = await Promise.race([photo.promise, new Promise<null>(resolve => setTimeout(resolve, 3000))]) as PhotoData | null;
+          const result = await Promise.race([photo.promise, new Promise<null>(resolve => setTimeout(resolve, 5000))]) as PhotoData | null;
           // this.logger.debug(result, "Photo resolved"); // Commented out - logs base64 image
           return result;
         } else {

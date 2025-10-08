@@ -213,6 +213,9 @@ export class MiraAgent implements Agent {
       }
     }
 
+    // Remove any remaining "Needs Camera:" text that might be in the answer
+    answer = answer.replace(/Needs Camera:\s*(true|false)/gi, '').trim();
+
     return { answer, needsCamera };
   }
 
@@ -224,17 +227,22 @@ export class MiraAgent implements Agent {
     query: string,
     locationInfo: string,
     notificationsContext: string,
-    localtimeContext: string
+    localtimeContext: string,
+    hasPhoto: boolean
   ): Promise<{ answer: string; needsCamera: boolean }> {
     const llm = LLMProvider.getLLM().bindTools(this.agentTools);
     const toolNames = this.agentTools.map((tool) => tool.name + ": " + tool.description || "");
+
+    const photoContext = hasPhoto
+      ? "IMPORTANT: Your role is to classify the query and provide an answer ONLY if it's non-visual. For the 'Needs Camera' flag: set it to TRUE if the query requires visual input from the camera (e.g., 'what is this?', 'how many fingers?', 'what color?', 'describe what you see', 'read this'). Set it to FALSE for general knowledge queries (e.g., 'weather', 'time', 'calculations', 'facts'). If Needs Camera is TRUE, just output a placeholder like 'Processing visual query...' as your Final Answer - the image analysis will handle it."
+      : "";
 
     const systemPrompt = systemPromptBlueprint
       .replace("{tool_names}", toolNames.join("\n"))
       .replace("{location_context}", locationInfo)
       .replace("{notifications_context}", notificationsContext)
       .replace("{timezone_context}", localtimeContext)
-      .replace("{photo_context}", "");
+      .replace("{photo_context}", photoContext);
 
     const messages: BaseMessage[] = [new SystemMessage(systemPrompt), new HumanMessage(query)];
 
@@ -408,7 +416,7 @@ export class MiraAgent implements Agent {
 
           // Run both queries in parallel: text-based agent and image analysis
           const [textResult, imageAnalysisResult] = await Promise.all([
-            this.runTextBasedAgent(query, locationInfo, notificationsContext, localtimeContext),
+            this.runTextBasedAgent(query, locationInfo, notificationsContext, localtimeContext, true),
             analyzeImage(tempImagePath, query)
           ]);
 
@@ -491,7 +499,7 @@ export class MiraAgent implements Agent {
         const turnStartTime = Date.now();
         console.log(`\n⏱️  [+${turnStartTime - startTime}ms] 🔁 Turn ${turns + 1}/5 - Invoking LLM...`);
 
-        // console.log("MiraAgent Messages:", this.messages); // Commented out - logs base64 images
+        console.log("MiraAgent Messages:", this.messages); // Commented out - logs base64 images
         // Invoke the chain with the query
         const result: AIMessage = await llm.invoke(this.messages);
         this.messages.push(result);
@@ -548,9 +556,9 @@ export class MiraAgent implements Agent {
                 });
               }
 
-              // console.log(`[MiraAgent] Tool ${toolCall.name} returned:`, toolMessage.content);
-              // console.log(`[MiraAgent] Tool message ID:`, toolMessage.id);
-              // console.log(`[MiraAgent] Tool message content length:`, toolMessage.content?.length || 0);
+              console.log(`[MiraAgent] Tool ${toolCall.name} returned:`, toolMessage.content);
+              console.log(`[MiraAgent] Tool message ID:`, toolMessage.id);
+              console.log(`[MiraAgent] Tool message content length:`, toolMessage.content?.length || 0);
 
               // Create a new ToolMessage if we need to modify content or id
               if (toolMessage.content == "" || toolMessage.content == null || toolMessage.id == null) {
