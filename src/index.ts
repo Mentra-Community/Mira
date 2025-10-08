@@ -94,7 +94,7 @@ class TranscriptionManager {
 
   private serverUrl: string;
   private transcriptProcessor: TranscriptProcessor;
-  private activePhotos: Map<string, { promise: Promise<PhotoData>, photoData: PhotoData | null, lastPhotoTime: number }> = new Map();
+  private activePhotos: Map<string, { promise: Promise<PhotoData>, photoData: PhotoData | null, lastPhotoTime: number, requestTime?: number }> = new Map();
   private logger: AppSession['logger'];
 
     /**
@@ -169,8 +169,13 @@ class TranscriptionManager {
     if (!this.activePhotos.has(this.sessionId)) {
       // if we don't have a photo, get one
       if (this.session.capabilities?.hasCamera) {
+        const photoRequestTime = Date.now();
+        console.log(`📸 [${new Date().toISOString()}] Photo requested at timestamp: ${photoRequestTime}`);
         const getPhotoPromise = this.session.camera.requestPhoto({size: "small"});
         getPhotoPromise.then(photoData => {
+          const photoReceivedTime = Date.now();
+          const photoLatency = photoReceivedTime - photoRequestTime;
+          console.log(`📸 [${new Date().toISOString()}] ✅ Photo received! Latency: ${photoLatency}ms (requested: ${photoRequestTime}, received: ${photoReceivedTime})`);
           this.activePhotos.set(this.sessionId, {
             promise: getPhotoPromise,
             photoData: photoData,
@@ -183,6 +188,7 @@ class TranscriptionManager {
             }
           }, 30000);
         }, error => {
+          console.log(`📸 [${new Date().toISOString()}] ❌ Photo request failed after ${Date.now() - photoRequestTime}ms`);
           this.logger.error(error, `[Session ${this.sessionId}]: Error getting photo:`);
           this.activePhotos.delete(this.sessionId);
         });
@@ -190,7 +196,8 @@ class TranscriptionManager {
           // promise: this.session.camera.requestPhoto(), // Keep original promise for compatibility
           promise: getPhotoPromise, // Keep original promise for compatibility
           photoData: null,
-          lastPhotoTime: Date.now()
+          lastPhotoTime: Date.now(),
+          requestTime: photoRequestTime
         });
       }
     }
@@ -352,22 +359,37 @@ class TranscriptionManager {
   }
 
   private async getPhoto(): Promise<PhotoData | null> {
+    const getPhotoStartTime = Date.now();
+    console.log(`📸 [${new Date().toISOString()}] getPhoto() called at timestamp: ${getPhotoStartTime}`);
+
     if (this.activePhotos.has(this.sessionId)) {
       const photo = this.activePhotos.get(this.sessionId);
       if (photo && photo.photoData) {
+        console.log(`📸 [${new Date().toISOString()}] ✅ Photo already available (cached)`);
         return photo.photoData;
       } else {
         if (photo?.promise) {
           // wait up to 5 seconds for promise to resolve
+          const waitStartTime = Date.now();
+          const requestAge = photo.requestTime ? waitStartTime - photo.requestTime : 'unknown';
+          console.log(`📸 [${new Date().toISOString()}] ⏳ Waiting for photo promise (request age: ${requestAge}ms, timeout: 5000ms)`);
           this.logger.debug("Waiting for photo to resolve");
           const result = await Promise.race([photo.promise, new Promise<null>(resolve => setTimeout(resolve, 5000))]) as PhotoData | null;
+          const waitDuration = Date.now() - waitStartTime;
+          if (result) {
+            console.log(`📸 [${new Date().toISOString()}] ✅ Photo promise resolved after ${waitDuration}ms wait`);
+          } else {
+            console.log(`📸 [${new Date().toISOString()}] ⏱️ Photo promise timed out after ${waitDuration}ms`);
+          }
           // this.logger.debug(result, "Photo resolved"); // Commented out - logs base64 image
           return result;
         } else {
+          console.log(`📸 [${new Date().toISOString()}] ❌ No photo promise available`);
           return null;
         }
       }
     }
+    console.log(`📸 [${new Date().toISOString()}] ❌ No active photo for session`);
     return null;
   }
 
