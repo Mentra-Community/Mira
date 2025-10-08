@@ -32,12 +32,13 @@
     "ghcr:release": "npm run ghcr:build && npm run ghcr:push"
   },
   "dependencies": {
+    "@google/genai": "^1.22.0",
     "@langchain/anthropic": "^0.3.16",
     "@langchain/community": "^0.3.39",
     "@langchain/core": "^0.3.55",
     "@langchain/google-vertexai": "^0.2.3",
     "@langchain/openai": "^0.5.4",
-    "@mentra/sdk": "latest",
+    "@mentra/sdk": "^2.1.26",
     "@node-rs/jieba": "^2.0.1",
     "@types/express": "^5.0.1",
     "@types/node": "^22.13.14",

@@ -4,12 +4,13 @@
     "": {
       "name": "@augmentos/mira",
       "dependencies": {
+        "@google/genai": "^1.22.0",
         "@langchain/anthropic": "^0.3.16",
         "@langchain/community": "^0.3.39",
         "@langchain/core": "^0.3.55",
         "@langchain/google-vertexai": "^0.2.3",
         "@langchain/openai": "^0.5.4",
-        "@mentra/sdk": "latest",
+        "@mentra/sdk": "^2.1.26",
         "@node-rs/jieba": "^2.0.1",
         "@types/express": "^5.0.1",
         "@types/node": "^22.13.14",
@@ -41,6 +42,8 @@
     "@emnapi/runtime": ["@emnapi/runtime@1.4.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-pBPWdu6MLKROBX05wSNKcNb++m5Er+KQ9QkB+WVM+pW2Kx9hoSrVTnu3BdkI5eBLZoKu/J6mW/B6i6bJB2ytXQ=="],
 
     "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.0.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-5n3nTJblwRi8LlXkJ9eBzu+kZR8Yxcc7ubakyQTFzPMtIhFpUBRbsnc2Dv88IZDIbCDlBiWrknhB4Lsz7mg6BA=="],
+
+    "@google/genai": ["@google/genai@1.22.0", "", { "dependencies": { "google-auth-library": "^9.14.2", "ws": "^8.18.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.11.4" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-siETS3zTm3EGpTT4+BFc1z20xXBYfueD3gCYfxkOjuAKRk8lt8TJevDHi3zepn1oSI6NhG/LZvy0i+Q3qheObg=="],
 
     "@graphql-typed-document-node/core": ["@graphql-typed-document-node/core@3.2.0", "", { "peerDependencies": { "graphql": "^0.8.0 || ^0.9.0 || ^0.10.0 || ^0.11.0 || ^0.12.0 || ^0.13.0 || ^14.0.0 || ^15.0.0 || ^16.0.0 || ^17.0.0" } }, "sha512-mB9oAsNCm9aM3/SOv4YtBMqZbYj10R7dkq8byBqxGY/ncFwhf2oQzMV+LCRlWoDSEBJ3COiR1yeDvMtsoOsuFQ=="],
 
@@ -136,7 +139,7 @@
 
     "@logtail/types": ["@logtail/types@0.5.3", "", {}, "sha512-5uKf1xQ7wRqSW0lYIwDpXdXcFHxPKH5EM22MoEjwTpd8suymOYuEdx9qCCHCYey4uOhPq7x6OkZf86bTO83JsA=="],
 
-    "@mentra/sdk": ["@mentra/sdk@2.1.22", "", { "dependencies": { "@logtail/pino": "^0.5.4", "axios": "^1.8.1", "cookie-parser": "^1.4.7", "dotenv": "^16.4.0", "express": "^4.18.2", "jimp": "^1.6.0", "jsonwebtoken": "^8.5.1", "jsrsasign": "^11.1.0", "multer": "^2.0.1", "pino": "^9.6.0", "pino-pretty": "^13.0.0", "ws": "^8.18.2" } }, "sha512-4rzSxNzzoBQRMX71B/ug8+j64IwufjaMzMV0X3DE078XkSvspk9gADuMtta7xsf4ZQvuuzSQi++hL19HeGyC7Q=="],
+    "@mentra/sdk": ["@mentra/sdk@2.1.26", "", { "dependencies": { "@logtail/pino": "^0.5.4", "axios": "^1.8.1", "cookie-parser": "^1.4.7", "dotenv": "^16.4.0", "express": "^4.18.2", "jimp": "^1.6.0", "jsonwebtoken": "^8.5.1", "jsrsasign": "^11.1.0", "multer": "^2.0.1", "pino": "^9.6.0", "pino-pretty": "^13.0.0", "ws": "^8.18.2" }, "bin": { "mentra": "dist/cli.js" } }, "sha512-UdeG9rvcRblFeq2Cuh8ioKtQBmIrkIKgHiice5geya/fSXgWHN4m+Cdh5XCvkWK7MJaxoaIPQdzUScgrzcxVWA=="],
 
     "@msgpack/msgpack": ["@msgpack/msgpack@2.8.0", "", {}, "sha512-h9u4u/jiIRKbq25PM+zymTyW6bhTzELvOoUd+AvYriWOAKpLGnIamaET3pnHYoI5iYphAHBI4ayx0MehR+VVPQ=="],
 

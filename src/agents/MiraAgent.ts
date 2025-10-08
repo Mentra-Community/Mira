@@ -16,6 +16,10 @@ import { AppManagementAgent } from "./AppManagementAgent";
 import { ThinkingTool } from "./tools/ThinkingTool";
 import { Calculator } from "@langchain/community/tools/calculator";
 import { AppServer, PhotoData, GIVE_APP_CONTROL_OF_TOOL_RESPONSE } from "@mentra/sdk";
+import { analyzeImage } from "../test/nano-banana";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 
 interface QuestionAnswer {
@@ -214,6 +218,11 @@ export class MiraAgent implements Agent {
   }
 
   public async handleContext(userContext: Record<string, any>): Promise<any> {
+    const startTime = Date.now();
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`⏱️  [TIMESTAMP] handleContext START: ${new Date().toISOString()}`);
+    console.log(`${"=".repeat(60)}\n`);
+
     try {
       // Extract required fields from the userContext.
       const transcriptHistory = userContext.transcript_history || "";
@@ -255,6 +264,49 @@ export class MiraAgent implements Agent {
 
       const photoContext = photo ? `The attached photo is what the user can currently see.  It may or may not be relevant to the query.  If it is relevant, use it to answer the query.` : '';
 
+      const photoCheckTime = Date.now();
+      console.log(`⏱️  [+${photoCheckTime - startTime}ms] Photo check complete: ${photo ? 'YES' : 'NO'}`);
+      console.log(`📷 Photo buffer size:`, photo?.buffer?.length || 0);
+
+      // Analyze photo with Gemini if present
+      if (photo) {
+        try {
+          const geminiStartTime = Date.now();
+          console.log(`⏱️  [+${geminiStartTime - startTime}ms] 🚀 Starting Gemini image analysis...`);
+
+          // Save photo to temp file
+          const tempDir = os.tmpdir();
+          const tempImagePath = path.join(tempDir, `mira-photo-${Date.now()}.jpg`);
+          fs.writeFileSync(tempImagePath, photo.buffer);
+
+          const geminiResponse = await analyzeImage(tempImagePath, query);
+          const geminiEndTime = Date.now();
+          const geminiDuration = geminiEndTime - geminiStartTime;
+
+          console.log(`⏱️  [+${geminiEndTime - startTime}ms] ✅ Gemini analysis complete (took ${geminiDuration}ms)`);
+          console.log(`🤖 Gemini response:`, geminiResponse);
+
+          // Clean up temp file
+          fs.unlinkSync(tempImagePath);
+
+          // Return Gemini response immediately if we got one
+          if (geminiResponse) {
+            const totalDuration = geminiEndTime - startTime;
+            console.log(`\n${"=".repeat(60)}`);
+            console.log(`⏱️  [+${totalDuration}ms] ⚡ RETURNING GEMINI RESPONSE (FAST PATH)`);
+            console.log(`⏱️  Total processing time: ${(totalDuration / 1000).toFixed(2)}s`);
+            console.log(`${"=".repeat(60)}\n`);
+            return geminiResponse;
+          }
+        } catch (error) {
+          console.error('Error analyzing image with Gemini:', error);
+          // Continue to regular LLM flow if Gemini fails
+        }
+      }
+
+      const llmSetupTime = Date.now();
+      console.log(`⏱️  [+${llmSetupTime - startTime}ms] 🔧 Setting up LLM and tools...`);
+
       const llm = LLMProvider.getLLM().bindTools(this.agentTools);
       const toolNames = this.agentTools.map((tool) => tool.name+": "+tool.description || "");
 
@@ -289,20 +341,28 @@ export class MiraAgent implements Agent {
         this.messages.push(new HumanMessage(query));
       }
 
-      console.log("fds");
+      const loopStartTime = Date.now();
+      console.log(`⏱️  [+${loopStartTime - startTime}ms] 🔄 Starting agent reasoning loop...`);
 
       while (turns < 5) {
-        console.log("MiraAgent Messages:", this.messages);
+        const turnStartTime = Date.now();
+        console.log(`\n⏱️  [+${turnStartTime - startTime}ms] 🔁 Turn ${turns + 1}/5 - Invoking LLM...`);
+
+        // console.log("MiraAgent Messages:", this.messages); // Commented out - logs base64 images
         // Invoke the chain with the query
         const result: AIMessage = await llm.invoke(this.messages);
         this.messages.push(result);
 
-        console.log("MiraAgent Result:", result);
+        const turnEndTime = Date.now();
+        console.log(`⏱️  [+${turnEndTime - startTime}ms] ✅ Turn ${turns + 1} LLM response received (took ${turnEndTime - turnStartTime}ms)`); 
 
         const output: string = result.content.toString();
 
         if (result.tool_calls) {
+          console.log(`⏱️  [+${Date.now() - startTime}ms] 🔨 Processing ${result.tool_calls.length} tool call(s)...`);
+
           for (const toolCall of result.tool_calls) {
+            const toolCallStartTime = Date.now();
             const selectedTool = this.agentTools.find(tool => tool.name === toolCall.name);
             if (selectedTool) {
               // Handle DynamicStructuredTool vs regular Tool differently
@@ -315,7 +375,7 @@ export class MiraAgent implements Agent {
                 toolInput = JSON.stringify(toolCall.args);
               }
 
-              console.log(`[MiraAgent] Calling tool ${toolCall.name} with input:`, toolInput);
+              console.log(`⏱️  [+${Date.now() - startTime}ms] 🔧 Calling tool: ${toolCall.name}`);
               let toolResult: any;
               try {
                 toolResult = await selectedTool.invoke(toolInput, {
@@ -324,6 +384,8 @@ export class MiraAgent implements Agent {
                 if (toolResult === GIVE_APP_CONTROL_OF_TOOL_RESPONSE) {
                   return GIVE_APP_CONTROL_OF_TOOL_RESPONSE;
                 }
+                const toolCallEndTime = Date.now();
+                console.log(`⏱️  [+${toolCallEndTime - startTime}ms] ✅ Tool ${toolCall.name} completed (took ${toolCallEndTime - toolCallStartTime}ms)`);
               } catch (error) {
                 console.error(`[MiraAgent] Error invoking tool ${toolCall.name}:`, error);
                 toolResult = `Error executing tool: ${error}`;
@@ -391,15 +453,25 @@ export class MiraAgent implements Agent {
 
         const finalMarker = "Final Answer:";
         if (output.includes(finalMarker)) {
+          const finalTime = Date.now();
+          const totalDuration = finalTime - startTime;
+          console.log(`\n${"=".repeat(60)}`);
+          console.log(`⏱️  [+${totalDuration}ms] 🎯 FINAL ANSWER RECEIVED!`);
+          console.log(`⏱️  Total processing time: ${(totalDuration / 1000).toFixed(2)}s`);
+          console.log(`${"=".repeat(60)}\n`);
           console.log("Final Answer:", output);
           const parsedResult = this.parseOutput(output);
           return parsedResult.insight;
         }
-        console.log(`Result for turn ${turns}: ${output}`);
 
         turns++;
       }
+
+      const timeoutTime = Date.now();
+      console.log(`⏱️  [+${timeoutTime - startTime}ms] ⚠️  Max turns reached without final answer`);
     } catch (err) {
+      const errorTime = Date.now();
+      console.log(`⏱️  [+${errorTime - startTime}ms] ❌ Error occurred in handleContext`);
       console.error("[MiraAgent] Error:", err);
       const errString = String(err);
       return errString.match(/LLM output:\s*(.*)$/)?.[1] || "Error processing query.";

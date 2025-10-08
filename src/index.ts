@@ -10,6 +10,7 @@ import { wrapText, TranscriptProcessor } from './utils';
 import { getAllToolsForUser } from './agents/tools/TpaTool';
 import { log } from 'console';
 import { Anim } from './utils/anim';
+import { analyzeImage } from './test/nano-banana';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
 const PACKAGE_NAME = process.env.PACKAGE_NAME;
@@ -47,7 +48,7 @@ const explicitWakeWords = [
   "hey mear", "he mear", "hey miras", "he miras", "hey miora", "he miora", "hey miri", "he miri",
   "hey maura", "he maura", "hey maya", "he maya", "hey moora", "he moora",
   "hey mihrah", "he mihrah", "ay mira", "ey mira", "yay mira", "hey mihra",
-  "hey mera", "hey mira", "hey mila", "hey mirra",
+  "hey mera", "hey mira", "hey mila", "hey mirra", "hey amir", "hey amira",
 ];
 
 /**
@@ -198,7 +199,9 @@ class TranscriptionManager {
       // play new sound effect
       const hasScreenStart = this.session.capabilities?.hasDisplay;
       if (this.session.settings.get<boolean>("speak_response") || !hasScreenStart) {
-        this.session.audio.playAudio({audioUrl: START_LISTENING_SOUND_URL});
+        this.session.audio.playAudio({audioUrl: START_LISTENING_SOUND_URL}).catch(err => {
+          this.logger.debug('Start listening audio failed:', err);
+        });
       }
       try {
         this.session.location.getLatestLocation({accuracy: "high"}).then(location => {
@@ -223,7 +226,7 @@ class TranscriptionManager {
         this.processQuery(text, 15000);
       }, 15000);
     }
-//todo _____________
+      //todo _____________
 
 
     this.isListeningToQuery = true;
@@ -358,7 +361,7 @@ class TranscriptionManager {
           // wait up to 3 seconds for promise to resolve
           this.logger.debug("Waiting for photo to resolve");
           const result = await Promise.race([photo.promise, new Promise<null>(resolve => setTimeout(resolve, 3000))]) as PhotoData | null;
-          this.logger.debug(result, "Photo resolved");
+          // this.logger.debug(result, "Photo resolved"); // Commented out - logs base64 image
           return result;
         } else {
           return null;
@@ -466,8 +469,13 @@ class TranscriptionManager {
   // check if the the processQuery is being called all the time? and does it display in all cases 
   // when mira bbreaks and fails to display anything. determine if this function was called or not.
   private async processQuery(rawText: string, timerDuration: number): Promise<void> {
-    const anim = new Anim(this.session); 
-  
+    const processQueryStartTime = Date.now();
+    console.log(`\n${"█".repeat(70)}`);
+    console.log(`⏱️  [TIMESTAMP] 🎤 processQuery START: ${new Date().toISOString()}`);
+    console.log(`${"█".repeat(70)}\n`);
+
+    const anim = new Anim(this.session);
+
     logger.debug("processQuery called ");
     // Calculate the actual duration from transcriptionStartTime to now
     const endTime = Date.now();
@@ -478,6 +486,8 @@ class TranscriptionManager {
       durationSeconds = Math.max(1, Math.ceil(timerDuration / 1000));
     }
 
+    console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] 📊 Transcription duration: ${durationSeconds}s`);
+
     // Use the calculated duration in the backend URL
     const backendUrl = `${this.serverUrl}/api/transcripts/${this.sessionId}?duration=${durationSeconds}`;
 
@@ -485,8 +495,14 @@ class TranscriptionManager {
     let transcriptionResponse: any;
 
     try {
+      const fetchStartTime = Date.now();
+      console.log(`⏱️  [+${fetchStartTime - processQueryStartTime}ms] 🌐 Fetching transcript from backend...`);
+
       this.logger.debug(`[Session ${this.sessionId}]: Fetching transcript from: ${backendUrl}`);
       transcriptResponse = await fetch(backendUrl);
+
+      const fetchEndTime = Date.now();
+      console.log(`⏱️  [+${fetchEndTime - processQueryStartTime}ms] ✅ Transcript fetched (took ${fetchEndTime - fetchStartTime}ms)`);
 
       this.logger.debug(`[Session ${this.sessionId}]: Response status: ${transcriptResponse.status}`);
 
@@ -500,7 +516,7 @@ class TranscriptionManager {
       if (!responseText || responseText.trim() === '') {
         throw new Error('Empty response body received');
       }
-      
+
 
       try {
         transcriptionResponse = JSON.parse(responseText);
@@ -511,6 +527,7 @@ class TranscriptionManager {
       }
 
     } catch (fetchError) {
+      console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ❌ Error fetching transcript`);
       this.logger.error(fetchError, `[Session ${this.sessionId}]: Error fetching transcript:`);
       this.session.layouts.showTextWall(
         wrapText("Sorry, there was an error retrieving your transcript. Please try again.", 30),
@@ -554,15 +571,25 @@ class TranscriptionManager {
 
     const hasScreenProcessing = this.session.capabilities?.hasDisplay;
     if (this.session.settings.get<boolean>("speak_response") || !hasScreenProcessing) {
-      this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).then(() => {
+      this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).catch(err => {
+        this.logger.debug('Processing audio 1 failed:', err);
+      }).then(() => {
         if (isRunning) {
-          this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).then(() => {
+          this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).catch(err => {
+            this.logger.debug('Processing audio 2 failed:', err);
+          }).then(() => {
             if (isRunning) {
-              this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).then(() => {
+              this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).catch(err => {
+                this.logger.debug('Processing audio 3 failed:', err);
+              }).then(() => {
                 if (isRunning) {
-                  this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).then(() => {
+                  this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).catch(err => {
+                    this.logger.debug('Processing audio 4 failed:', err);
+                  }).then(() => {
                     if (isRunning) {
-                      this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL });
+                      this.session.audio.playAudio({ audioUrl: PROCESSING_SOUND_URL }).catch(err => {
+                        this.logger.debug('Processing audio 5 failed:', err);
+                      });
                     }
                   });
                 }
@@ -574,6 +601,8 @@ class TranscriptionManager {
     }
 
     try {
+      console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] 📝 Query extracted: "${query}"`);
+
       // Show the query being processed
       let displayQuery = query;
       if (displayQuery.length > 60) {
@@ -585,17 +614,31 @@ class TranscriptionManager {
         { durationMs: 8000 }
       );
 
+      const photoStartTime = Date.now();
+      console.log(`⏱️  [+${photoStartTime - processQueryStartTime}ms] 📸 Getting photo...`);
+      const photo = await this.getPhoto();
+      console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ${photo ? '✅ Photo retrieved' : '⚪ No photo available'}`);
+
+      const agentStartTime = Date.now();
+      console.log(`⏱️  [+${agentStartTime - processQueryStartTime}ms] 🤖 Invoking MiraAgent.handleContext...`);
+
       // Process the query with the Mira agent
-      const inputData = { query, photo: await this.getPhoto() };
+      const inputData = { query, photo };
       const agentResponse = await this.miraAgent.handleContext(inputData);
 
+      const agentEndTime = Date.now();
+      console.log(`⏱️  [+${agentEndTime - processQueryStartTime}ms] ✅ MiraAgent completed (took ${agentEndTime - agentStartTime}ms)`);
+
+      // analyzeImage(); // Removed - already called in MiraAgent.handleContext
       anim.stop(); // animiation stop
       isRunning = false;
 
       if (!agentResponse) {
+        console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ⚠️  No agent response received`);
         this.logger.info("No insight found");
         this.showOrSpeakText("Sorry, I couldn't find an answer to that.");
       } else if (agentResponse === GIVE_APP_CONTROL_OF_TOOL_RESPONSE) {
+        console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] 🎮 App control handed over to tool`);
         // the app is now in control, so don't do anything
       } else {
         let handled = false;
@@ -620,11 +663,22 @@ class TranscriptionManager {
         }
 
         if (!handled) {
+          const displayStartTime = Date.now();
+          console.log(`⏱️  [+${displayStartTime - processQueryStartTime}ms] 📱 Displaying response to user...`);
           this.showOrSpeakText(agentResponse);
+          console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ✅ Response displayed`);
         }
       }
+
+      const totalProcessTime = Date.now() - processQueryStartTime;
+      console.log(`\n${"█".repeat(70)}`);
+      console.log(`⏱️  [TIMESTAMP] 🏁 processQuery COMPLETE!`);
+      console.log(`⏱️  Total time from start to finish: ${(totalProcessTime / 1000).toFixed(2)}s (${totalProcessTime}ms)`);
+      console.log(`${"█".repeat(70)}\n`);
+
     } catch (error) {
       anim.stop();
+      console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ❌ Error in processQuery`);
       logger.error(error, `[Session ${this.sessionId}]: Error processing query:`);
       this.showOrSpeakText("Sorry, there was an error processing your request.");
     } finally {
@@ -792,7 +846,7 @@ class MiraServer extends AppServer {
     });
     this.agentPerSession.set(sessionId, agent);
 
-    // Create transcription manager for this session
+    // Create a transcription manager for this session — this is what essentially connects the user's session input to the backend.
     const transcriptionManager = new TranscriptionManager(
       session, sessionId, userId, agent, cleanServerUrl
     );
