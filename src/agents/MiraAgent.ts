@@ -397,229 +397,54 @@ export class MiraAgent implements Agent {
         notificationsContext = `Recent notifications:\n${notifs}\n\n`;
       }
 
-      const photoContext = photo ? `The attached photo is what the user can currently see.  It may or may not be relevant to the query.  If it is relevant, use it to answer the query.` : '';
+      // STEP 1: Always run text-based agent first to classify the query
+      console.log(`⏱️  [+${Date.now() - startTime}ms] 🚀 Running text-based classifier...`);
+      const textClassifierStart = Date.now();
+      const textResult = await this.runTextBasedAgent(query, locationInfo, notificationsContext, localtimeContext, !!photo);
+      console.log(`⏱️  [+${Date.now() - startTime}ms] ✅ Text classifier complete (took ${Date.now() - textClassifierStart}ms)`);
+      console.log(`🤖 Camera needed:`, textResult.needsCamera);
+      console.log(`🤖 Text answer:`, textResult.answer);
 
-      const photoCheckTime = Date.now();
-      console.log(`⏱️  [+${photoCheckTime - startTime}ms] Photo check complete: ${photo ? 'YES' : 'NO'}`);
-      console.log(`📷 Photo buffer size:`, photo?.buffer?.length || 0);
-
-      // Run both text and image queries in parallel if photo exists
-      if (photo) {
+      // STEP 2: If query needs camera AND we have a photo, run image analysis
+      if (textResult.needsCamera && photo) {
         try {
-          const parallelStartTime = Date.now();
-          console.log(`⏱️  [+${parallelStartTime - startTime}ms] 🚀 Starting parallel queries (text + image)...`);
+          console.log(`⏱️  [+${Date.now() - startTime}ms] 📸 Camera needed - running image analysis...`);
+          const imageAnalysisStart = Date.now();
 
           // Save photo to temp file for image analysis
           const tempDir = os.tmpdir();
           const tempImagePath = path.join(tempDir, `mira-photo-${Date.now()}.jpg`);
           fs.writeFileSync(tempImagePath, photo.buffer);
 
-          // Run both queries in parallel: text-based agent and image analysis
-          const [textResult, imageAnalysisResult] = await Promise.all([
-            this.runTextBasedAgent(query, locationInfo, notificationsContext, localtimeContext, true),
-            analyzeImage(tempImagePath, query)
-          ]);
+          // Run image analysis
+          const imageAnalysisResult = await analyzeImage(tempImagePath, query);
 
-          const parallelEndTime = Date.now();
-          const parallelDuration = parallelEndTime - parallelStartTime;
-
-          console.log(`⏱️  [+${parallelEndTime - startTime}ms] ✅ Parallel queries complete (took ${parallelDuration}ms)`);
-          console.log(`🤖 Camera needed:`, textResult.needsCamera);
-          console.log(`🤖 Text answer:`, textResult.answer);
+          console.log(`⏱️  [+${Date.now() - startTime}ms] ✅ Image analysis complete (took ${Date.now() - imageAnalysisStart}ms)`);
           console.log(`🤖 Image answer:`, imageAnalysisResult);
 
           // Clean up temp file
           fs.unlinkSync(tempImagePath);
 
-          // Decide which response to use based on needsCamera flag
-          let finalResponse: string;
-          if (textResult.needsCamera) {
-            // Query needs camera, use image analysis result
-            finalResponse = imageAnalysisResult || textResult.answer;
-            console.log(`📸 Using IMAGE-BASED response (camera required)`);
-          } else {
-            // Query doesn't need camera, use text-based answer
-            finalResponse = textResult.answer;
-            console.log(`📝 Using TEXT-BASED response (camera not required)`);
-          }
-
-          const totalDuration = parallelEndTime - startTime;
+          const totalDuration = Date.now() - startTime;
           console.log(`\n${"=".repeat(60)}`);
-          console.log(`⏱️  [+${totalDuration}ms] ⚡ RETURNING PARALLEL RESPONSE`);
+          console.log(`⏱️  [+${totalDuration}ms] 📸 RETURNING IMAGE-BASED RESPONSE`);
           console.log(`⏱️  Total processing time: ${(totalDuration / 1000).toFixed(2)}s`);
           console.log(`${"=".repeat(60)}\n`);
-          return finalResponse;
+          return imageAnalysisResult || textResult.answer;
         } catch (error) {
-          console.error('Error in parallel query processing:', error);
-          // Continue to regular LLM flow if parallel processing fails
+          console.error('Error in image analysis:', error);
+          // Fall back to text answer if image analysis fails
+          return textResult.answer;
         }
       }
 
-      const llmSetupTime = Date.now();
-      console.log(`⏱️  [+${llmSetupTime - startTime}ms] 🔧 Setting up LLM and tools...`);
-
-      const llm = LLMProvider.getLLM().bindTools(this.agentTools);
-      const toolNames = this.agentTools.map((tool) => tool.name+": "+tool.description || "");
-
-      // Replace the {tool_names} placeholder with actual tool names and descriptions
-      const systemPrompt = systemPromptBlueprint
-        .replace("{tool_names}", toolNames.join("\n"))
-        .replace("{location_context}", locationInfo)
-        .replace("{notifications_context}", notificationsContext)
-        .replace("{timezone_context}", localtimeContext)
-        .replace("{photo_context}", photoContext);
-
-      this.messages.push(new SystemMessage(systemPrompt));
-      const photoAsBase64 = photo ? `data:image/jpeg;base64,${photo.buffer.toString('base64')}` : null;
-
-      // Create human message with optional image
-      if (photoAsBase64) {
-        this.messages.push(new HumanMessage({
-          content: [
-            {
-              type: "text",
-              text: query,
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: photoAsBase64,
-              },
-            },
-          ],
-        }));
-      } else {
-        this.messages.push(new HumanMessage(query));
-      }
-
-      const loopStartTime = Date.now();
-      console.log(`⏱️  [+${loopStartTime - startTime}ms] 🔄 Starting agent reasoning loop...`);
-
-      while (turns < 5) {
-        const turnStartTime = Date.now();
-        console.log(`\n⏱️  [+${turnStartTime - startTime}ms] 🔁 Turn ${turns + 1}/5 - Invoking LLM...`);
-
-        console.log("MiraAgent Messages:", this.messages); // Commented out - logs base64 images
-        // Invoke the chain with the query
-        const result: AIMessage = await llm.invoke(this.messages);
-        this.messages.push(result);
-
-        const turnEndTime = Date.now();
-        console.log(`⏱️  [+${turnEndTime - startTime}ms] ✅ Turn ${turns + 1} LLM response received (took ${turnEndTime - turnStartTime}ms)`); 
-
-        const output: string = result.content.toString();
-
-        if (result.tool_calls) {
-          console.log(`⏱️  [+${Date.now() - startTime}ms] 🔨 Processing ${result.tool_calls.length} tool call(s)...`);
-
-          for (const toolCall of result.tool_calls) {
-            const toolCallStartTime = Date.now();
-            const selectedTool = this.agentTools.find(tool => tool.name === toolCall.name);
-            if (selectedTool) {
-              // Handle DynamicStructuredTool vs regular Tool differently
-              let toolInput: any;
-              if (selectedTool instanceof StructuredTool) {
-                // For StructuredTool, pass the raw args object
-                toolInput = toolCall.args;
-              } else {
-                // For regular Tool, convert to JSON string
-                toolInput = JSON.stringify(toolCall.args);
-              }
-
-              console.log(`⏱️  [+${Date.now() - startTime}ms] 🔧 Calling tool: ${toolCall.name}`);
-              let toolResult: any;
-              try {
-                toolResult = await selectedTool.invoke(toolInput, {
-                  configurable: { runId: toolCall.id }
-                });
-                if (toolResult === GIVE_APP_CONTROL_OF_TOOL_RESPONSE) {
-                  return GIVE_APP_CONTROL_OF_TOOL_RESPONSE;
-                }
-                const toolCallEndTime = Date.now();
-                console.log(`⏱️  [+${toolCallEndTime - startTime}ms] ✅ Tool ${toolCall.name} completed (took ${toolCallEndTime - toolCallStartTime}ms)`);
-              } catch (error) {
-                console.error(`[MiraAgent] Error invoking tool ${toolCall.name}:`, error);
-                toolResult = `Error executing tool: ${error}`;
-              }
-
-              // Handle different return types from tools
-              let toolMessage: ToolMessage;
-              if (toolResult instanceof ToolMessage) {
-                toolMessage = toolResult;
-              } else {
-                // If the tool returned a string or other type, create a ToolMessage
-                const content = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
-                toolMessage = new ToolMessage({
-                  content: content,
-                  tool_call_id: toolCall.id || `fallback_${Date.now()}`,
-                  name: toolCall.name
-                });
-              }
-
-              console.log(`[MiraAgent] Tool ${toolCall.name} returned:`, toolMessage.content);
-              console.log(`[MiraAgent] Tool message ID:`, toolMessage.id);
-              console.log(`[MiraAgent] Tool message content length:`, toolMessage.content?.length || 0);
-
-              // Create a new ToolMessage if we need to modify content or id
-              if (toolMessage.content == "" || toolMessage.content == null || toolMessage.id == null) {
-                console.log(`[MiraAgent] Creating fallback tool message for ${toolCall.name}`);
-                toolMessage = new ToolMessage({
-                  content: toolMessage.content || "Tool executed successfully but did not return any information.",
-                  tool_call_id: toolMessage.id || toolCall.id || `fallback_${Date.now()}`,
-                  name: toolCall.name
-                });
-              }
-              // Always push the tool message
-              this.messages.push(toolMessage);
-              console.log(`[MiraAgent] Added tool message to conversation. Total messages:`, this.messages.length);
-              const contentStr = typeof toolMessage.content === 'string' ? toolMessage.content : JSON.stringify(toolMessage.content);
-              console.log(`[MiraAgent] Last tool message content preview:`, contentStr.substring(0, 200) + (contentStr.length > 200 ? '...' : ''));
-              // Check for timer event - only from Timer tool
-              if (toolCall.name === 'Timer' && typeof toolMessage.content === 'string') {
-                const content = toolMessage.content.trim();
-                // Only try to parse as JSON if it starts with { or [ (looks like JSON)
-                if (content.startsWith('{') || content.startsWith('[')) {
-                  try {
-                    const parsed = JSON.parse(content);
-                    if (parsed && parsed.event === 'timer_set' && parsed.duration) {
-                      return toolMessage.content; // Return timer event JSON directly
-                    }
-                  } catch (e) {
-                    console.log("Error parsing Timer tool JSON response:", e);
-                  }
-                }
-              }
-            } else {
-              console.log("Tried to call a tool that doesn't exist:", toolCall.name);
-              // Add a placeholder tool call message indicating the tool is unavailable
-              const unavailableToolMessage = new ToolMessage({
-                content: `Tool ${toolCall.name} unavailable`,
-                tool_call_id: toolCall.id || `unknown_${Date.now()}`,
-                status: "error"
-              });
-              this.messages.push(unavailableToolMessage);
-            }
-          }
-        }
-
-        const finalMarker = "Final Answer:";
-        if (output.includes(finalMarker)) {
-          const finalTime = Date.now();
-          const totalDuration = finalTime - startTime;
-          console.log(`\n${"=".repeat(60)}`);
-          console.log(`⏱️  [+${totalDuration}ms] 🎯 FINAL ANSWER RECEIVED!`);
-          console.log(`⏱️  Total processing time: ${(totalDuration / 1000).toFixed(2)}s`);
-          console.log(`${"=".repeat(60)}\n`);
-          console.log("Final Answer:", output);
-          const parsedResult = this.parseOutput(output);
-          return parsedResult.insight;
-        }
-
-        turns++;
-      }
-
-      const timeoutTime = Date.now();
-      console.log(`⏱️  [+${timeoutTime - startTime}ms] ⚠️  Max turns reached without final answer`);
+      // STEP 3: Either no camera needed OR no photo available - return text answer
+      const totalDuration = Date.now() - startTime;
+      console.log(`\n${"=".repeat(60)}`);
+      console.log(`⏱️  [+${totalDuration}ms] 📝 RETURNING TEXT-BASED RESPONSE`);
+      console.log(`⏱️  Total processing time: ${(totalDuration / 1000).toFixed(2)}s`);
+      console.log(`${"=".repeat(60)}\n`);
+      return textResult.answer;
     } catch (err) {
       const errorTime = Date.now();
       console.log(`⏱️  [+${errorTime - startTime}ms] ❌ Error occurred in handleContext`);
