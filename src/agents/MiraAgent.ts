@@ -34,16 +34,18 @@ You are an intelligent assistant that is running on the smart glasses of a user.
 
 Utilize available tools when necessary and adhere to the following guidelines:
 
-1. If the assistant has high confidence the answer is known internally, respond directly; only invoke Search_Engine if uncertain or answer depends on external data. 
+1. If the assistant has high confidence the answer is known internally, respond directly; only invoke Search_Engine if uncertain or answer depends on external data.
 2. Invoke the "Search_Engine" tool for confirming facts or retrieving extra details. Use the Search_Engine tool automatically to search the web for information about the user's query whenever you don't have enough information to answer.
 3. Use any other tools at your disposal as appropriate.  Proactively call tools that could give you any information you may need.
 4. You should think out loud before you answer. Come up with a plan for how to determine the answer accurately (including tools which might help) and then execute the plan. Use the Internal_Thinking tool to think out loud and reason about complex problems.
 5. Keep your final answer brief (fewer than 15 words).
-6. When you have enough information to answer, output your final answer on a new line prefixed by "Final Answer:" followed immediately by a concise answer:
-   "Final Answer: <concise answer>"
-7. If the query is empty, nonsensical, or useless, return Final Answer: "No query provided."
-8. For context, the UTC time and date is ${new Date().toUTCString()}, but for anything involving dates or times, make sure to response using the user's local time zone. If a tool needs a date or time input, convert it from the user's local time to UTC before passing it to a tool. Always think at length with the Internal_Thinking tool when working with dates and times to make sure you are using the correct time zone and offset.{timezone_context}
-9. If the user's query is location-specific (e.g., weather, news, events, or anything that depends on place), always use the user's current location context to provide the most relevant answer.
+6. IMPORTANT: After providing your final answer, you MUST also indicate whether this query requires camera/visual access. Add a new line after "Final Answer:" with "Needs Camera: true" or "Needs Camera: false". Queries that need camera: "what is this?", "read this", "what color is that?", "describe what you see". Queries that don't need camera: "what's the weather?", "set a timer", "what time is it?".
+7. When you have enough information to answer, output your final answer in this exact format:
+   "Final Answer: <concise answer>
+   Needs Camera: true/false"
+8. If the query is empty, nonsensical, or useless, return Final Answer: "No query provided." with Needs Camera: false
+9. For context, the UTC time and date is ${new Date().toUTCString()}, but for anything involving dates or times, make sure to response using the user's local time zone. If a tool needs a date or time input, convert it from the user's local time to UTC before passing it to a tool. Always think at length with the Internal_Thinking tool when working with dates and times to make sure you are using the correct time zone and offset.{timezone_context}
+10. If the user's query is location-specific (e.g., weather, news, events, or anything that depends on place), always use the user's current location context to provide the most relevant answer.
 
 {location_context}
 {notifications_context}
@@ -51,7 +53,7 @@ Utilize available tools when necessary and adhere to the following guidelines:
 Tools:
 {tool_names}
 
-Remember to always include the Final Answer: marker in your final response.`;
+Remember to always include both the Final Answer: and Needs Camera: markers in your final response.`;
 
 export class MiraAgent implements Agent {
   public agentId = "mira_agent";
@@ -185,6 +187,131 @@ export class MiraAgent implements Agent {
   }
 
   /**
+   * Parses the final LLM output and extracts both the answer and camera flag.
+   * Returns the answer text and whether camera is needed.
+   */
+  private parseOutputWithCameraFlag(text: string): { answer: string; needsCamera: boolean } {
+    console.log("MiraAgent Text:", text);
+    const finalMarker = "Final Answer:";
+    const cameraMarker = "Needs Camera:";
+
+    let answer = "Error processing query.";
+    let needsCamera = false;
+
+    if (text.includes(finalMarker)) {
+      const afterFinal = text.split(finalMarker)[1];
+
+      if (afterFinal.includes(cameraMarker)) {
+        // Split by camera marker to get both parts
+        const parts = afterFinal.split(cameraMarker);
+        answer = parts[0].trim();
+        const cameraValue = parts[1].trim().toLowerCase();
+        needsCamera = cameraValue.includes('true');
+      } else {
+        // No camera marker, just get the answer
+        answer = afterFinal.trim();
+      }
+    }
+
+    return { answer, needsCamera };
+  }
+
+  /**
+   * Runs the text-based agent reasoning loop (without image)
+   * Returns the answer and whether camera is needed
+   */
+  private async runTextBasedAgent(
+    query: string,
+    locationInfo: string,
+    notificationsContext: string,
+    localtimeContext: string
+  ): Promise<{ answer: string; needsCamera: boolean }> {
+    const llm = LLMProvider.getLLM().bindTools(this.agentTools);
+    const toolNames = this.agentTools.map((tool) => tool.name + ": " + tool.description || "");
+
+    const systemPrompt = systemPromptBlueprint
+      .replace("{tool_names}", toolNames.join("\n"))
+      .replace("{location_context}", locationInfo)
+      .replace("{notifications_context}", notificationsContext)
+      .replace("{timezone_context}", localtimeContext)
+      .replace("{photo_context}", "");
+
+    const messages: BaseMessage[] = [new SystemMessage(systemPrompt), new HumanMessage(query)];
+
+    let turns = 0;
+    while (turns < 5) {
+      const result: AIMessage = await llm.invoke(messages);
+      messages.push(result);
+
+      const output: string = result.content.toString();
+
+      if (result.tool_calls) {
+        for (const toolCall of result.tool_calls) {
+          const selectedTool = this.agentTools.find(tool => tool.name === toolCall.name);
+          if (selectedTool) {
+            let toolInput: any;
+            if (selectedTool instanceof StructuredTool) {
+              toolInput = toolCall.args;
+            } else {
+              toolInput = JSON.stringify(toolCall.args);
+            }
+
+            let toolResult: any;
+            try {
+              toolResult = await selectedTool.invoke(toolInput, {
+                configurable: { runId: toolCall.id }
+              });
+              if (toolResult === GIVE_APP_CONTROL_OF_TOOL_RESPONSE) {
+                return { answer: "App control requested", needsCamera: false };
+              }
+            } catch (error) {
+              console.error(`[TextAgent] Error invoking tool ${toolCall.name}:`, error);
+              toolResult = `Error executing tool: ${error}`;
+            }
+
+            let toolMessage: ToolMessage;
+            if (toolResult instanceof ToolMessage) {
+              toolMessage = toolResult;
+            } else {
+              const content = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
+              toolMessage = new ToolMessage({
+                content: content,
+                tool_call_id: toolCall.id || `fallback_${Date.now()}`,
+                name: toolCall.name
+              });
+            }
+
+            if (toolMessage.content == "" || toolMessage.content == null || toolMessage.id == null) {
+              toolMessage = new ToolMessage({
+                content: toolMessage.content || "Tool executed successfully but did not return any information.",
+                tool_call_id: toolMessage.id || toolCall.id || `fallback_${Date.now()}`,
+                name: toolCall.name
+              });
+            }
+            messages.push(toolMessage);
+          } else {
+            const unavailableToolMessage = new ToolMessage({
+              content: `Tool ${toolCall.name} unavailable`,
+              tool_call_id: toolCall.id || `unknown_${Date.now()}`,
+              status: "error"
+            });
+            messages.push(unavailableToolMessage);
+          }
+        }
+      }
+
+      const finalMarker = "Final Answer:";
+      if (output.includes(finalMarker)) {
+        return this.parseOutputWithCameraFlag(output);
+      }
+
+      turns++;
+    }
+
+    return { answer: "Error processing query.", needsCamera: false };
+  }
+
+  /**
    * Parses the final LLM output.
    * If the output contains a "Final Answer:" marker, the text after that marker is parsed as JSON.
    * Expects a JSON object with an "insight" key.
@@ -268,39 +395,55 @@ export class MiraAgent implements Agent {
       console.log(`⏱️  [+${photoCheckTime - startTime}ms] Photo check complete: ${photo ? 'YES' : 'NO'}`);
       console.log(`📷 Photo buffer size:`, photo?.buffer?.length || 0);
 
-      // Analyze photo with Gemini if present
+      // Run both text and image queries in parallel if photo exists
       if (photo) {
         try {
-          const geminiStartTime = Date.now();
-          console.log(`⏱️  [+${geminiStartTime - startTime}ms] 🚀 Starting Gemini image analysis...`);
+          const parallelStartTime = Date.now();
+          console.log(`⏱️  [+${parallelStartTime - startTime}ms] 🚀 Starting parallel queries (text + image)...`);
 
-          // Save photo to temp file
+          // Save photo to temp file for image analysis
           const tempDir = os.tmpdir();
           const tempImagePath = path.join(tempDir, `mira-photo-${Date.now()}.jpg`);
           fs.writeFileSync(tempImagePath, photo.buffer);
 
-          const geminiResponse = await analyzeImage(tempImagePath, query);
-          const geminiEndTime = Date.now();
-          const geminiDuration = geminiEndTime - geminiStartTime;
+          // Run both queries in parallel: text-based agent and image analysis
+          const [textResult, imageAnalysisResult] = await Promise.all([
+            this.runTextBasedAgent(query, locationInfo, notificationsContext, localtimeContext),
+            analyzeImage(tempImagePath, query)
+          ]);
 
-          console.log(`⏱️  [+${geminiEndTime - startTime}ms] ✅ Gemini analysis complete (took ${geminiDuration}ms)`);
-          console.log(`🤖 Gemini response:`, geminiResponse);
+          const parallelEndTime = Date.now();
+          const parallelDuration = parallelEndTime - parallelStartTime;
+
+          console.log(`⏱️  [+${parallelEndTime - startTime}ms] ✅ Parallel queries complete (took ${parallelDuration}ms)`);
+          console.log(`🤖 Camera needed:`, textResult.needsCamera);
+          console.log(`🤖 Text answer:`, textResult.answer);
+          console.log(`🤖 Image answer:`, imageAnalysisResult);
 
           // Clean up temp file
           fs.unlinkSync(tempImagePath);
 
-          // Return Gemini response immediately if we got one
-          if (geminiResponse) {
-            const totalDuration = geminiEndTime - startTime;
-            console.log(`\n${"=".repeat(60)}`);
-            console.log(`⏱️  [+${totalDuration}ms] ⚡ RETURNING GEMINI RESPONSE (FAST PATH)`);
-            console.log(`⏱️  Total processing time: ${(totalDuration / 1000).toFixed(2)}s`);
-            console.log(`${"=".repeat(60)}\n`);
-            return geminiResponse;
+          // Decide which response to use based on needsCamera flag
+          let finalResponse: string;
+          if (textResult.needsCamera) {
+            // Query needs camera, use image analysis result
+            finalResponse = imageAnalysisResult || textResult.answer;
+            console.log(`📸 Using IMAGE-BASED response (camera required)`);
+          } else {
+            // Query doesn't need camera, use text-based answer
+            finalResponse = textResult.answer;
+            console.log(`📝 Using TEXT-BASED response (camera not required)`);
           }
+
+          const totalDuration = parallelEndTime - startTime;
+          console.log(`\n${"=".repeat(60)}`);
+          console.log(`⏱️  [+${totalDuration}ms] ⚡ RETURNING PARALLEL RESPONSE`);
+          console.log(`⏱️  Total processing time: ${(totalDuration / 1000).toFixed(2)}s`);
+          console.log(`${"=".repeat(60)}\n`);
+          return finalResponse;
         } catch (error) {
-          console.error('Error analyzing image with Gemini:', error);
-          // Continue to regular LLM flow if Gemini fails
+          console.error('Error in parallel query processing:', error);
+          // Continue to regular LLM flow if parallel processing fails
         }
       }
 
