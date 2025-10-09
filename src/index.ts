@@ -3,7 +3,8 @@ import {
   AppSession,
   AppServer, PhotoData,
   GIVE_APP_CONTROL_OF_TOOL_RESPONSE,
-  logger as _logger
+  logger as _logger,
+  AuthenticatedRequest
 } from '@mentra/sdk';
 import { MiraAgent } from './agents';
 import { wrapText, TranscriptProcessor } from './utils';
@@ -11,6 +12,8 @@ import { getAllToolsForUser } from './agents/tools/TpaTool';
 import { log } from 'console';
 import { Anim } from './utils/anim';
 import { analyzeImage } from './test/nano-banana';
+import { ChatManager } from './chat/ChatManager';
+import express from 'express';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
 const PACKAGE_NAME = process.env.PACKAGE_NAME;
@@ -107,12 +110,15 @@ class TranscriptionManager {
     private transcriptionUnsubscribe?: () => void;
     private headWindowTimeoutId?: NodeJS.Timeout;
 
-  constructor(session: AppSession, sessionId: string, userId: string, miraAgent: MiraAgent, serverUrl: string) {
+  private chatManager?: ChatManager;
+
+  constructor(session: AppSession, sessionId: string, userId: string, miraAgent: MiraAgent, serverUrl: string, chatManager?: ChatManager) {
     this.session = session;
     this.sessionId = sessionId;
     this.userId = userId;
     this.miraAgent = miraAgent;
     this.serverUrl = serverUrl;
+    this.chatManager = chatManager;
     // Use same settings as LiveCaptions for now
     this.transcriptProcessor = new TranscriptProcessor(30, 3, 3, false);
     this.logger = session.logger.child({ service: 'Mira.TranscriptionManager' });
@@ -641,6 +647,26 @@ class TranscriptionManager {
       const photo = await this.getPhoto();
       console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ${photo ? '✅ Photo retrieved' : '⚪ No photo available'}`);
 
+      // Send user query and photo to webview (after photo is retrieved)
+      if (this.chatManager) {
+        console.log(`\n${"=".repeat(70)}`);
+        console.log(`📱 [WEBVIEW] Sending query to webview for user: ${this.userId}`);
+        console.log(`📱 [WEBVIEW] Query: "${query}"`);
+
+        // Convert PhotoData to base64 if available
+        let photoBase64: string | undefined;
+        if (photo) {
+          photoBase64 = `data:${photo.mimeType};base64,${photo.buffer.toString('base64')}`;
+          console.log(`📱 [WEBVIEW] 📷 Including photo (${photo.mimeType}, ${photo.size} bytes)`);
+        }
+
+        console.log(`${"=".repeat(70)}\n`);
+        this.chatManager.addUserMessage(this.userId, query, photoBase64);
+        this.chatManager.setProcessing(this.userId, true);
+      } else {
+        console.warn(`⚠️  [WEBVIEW] ChatManager not available - webview won't receive updates`);
+      }
+
       const agentStartTime = Date.now();
       console.log(`⏱️  [+${agentStartTime - processQueryStartTime}ms] 🤖 Invoking MiraAgent.handleContext...`);
 
@@ -658,10 +684,20 @@ class TranscriptionManager {
       if (!agentResponse) {
         console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ⚠️  No agent response received`);
         this.logger.info("No insight found");
-        this.showOrSpeakText("Sorry, I couldn't find an answer to that.");
+        const errorMsg = "Sorry, I couldn't find an answer to that.";
+        this.showOrSpeakText(errorMsg);
+
+        // Send response to webview
+        if (this.chatManager) {
+          this.chatManager.setProcessing(this.userId, false);
+          this.chatManager.addAssistantMessage(this.userId, errorMsg);
+        }
       } else if (agentResponse === GIVE_APP_CONTROL_OF_TOOL_RESPONSE) {
         console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] 🎮 App control handed over to tool`);
         // the app is now in control, so don't do anything
+        if (this.chatManager) {
+          this.chatManager.setProcessing(this.userId, false);
+        }
       } else {
         let handled = false;
         if (typeof agentResponse === 'string') {
@@ -688,6 +724,19 @@ class TranscriptionManager {
           const displayStartTime = Date.now();
           console.log(`⏱️  [+${displayStartTime - processQueryStartTime}ms] 📱 Displaying response to user...`);
           this.showOrSpeakText(agentResponse);
+
+          // Send response to webview
+          if (this.chatManager) {
+            console.log(`\n${"=".repeat(70)}`);
+            console.log(`📱 [WEBVIEW] Sending response to webview for user: ${this.userId}`);
+            console.log(`📱 [WEBVIEW] Response: "${agentResponse.substring(0, 100)}${agentResponse.length > 100 ? '...' : ''}"`);
+            console.log(`${"=".repeat(70)}\n`);
+            this.chatManager.setProcessing(this.userId, false);
+            this.chatManager.addAssistantMessage(this.userId, agentResponse);
+          } else {
+            console.warn(`⚠️  [WEBVIEW] ChatManager not available - webview won't receive response`);
+          }
+
           console.log(`⏱️  [+${Date.now() - processQueryStartTime}ms] ✅ Response displayed`);
         }
       }
@@ -846,6 +895,108 @@ function getCleanServerUrl(rawUrl: string | undefined): string {
 class MiraServer extends AppServer {
   private transcriptionManagers = new Map<string, TranscriptionManager>();
   private agentPerSession = new Map<string, MiraAgent>();
+  private chatManager: ChatManager;
+
+  constructor(options: any) {
+    super(options);
+    // Initialize ChatManager with server URL
+    const serverUrl = process.env.SERVER_URL || 'http://localhost:8040';
+    this.chatManager = new ChatManager(serverUrl);
+
+    // Set up chat API routes after server initialization
+    this.setupChatRoutes();
+  }
+
+  /**
+   * Set up Express routes and WebSocket for chat
+   */
+  private setupChatRoutes(): void {
+    const app = this.getExpressApp();
+
+    // Add body parser middleware for chat routes
+    const jsonParser = express.json();
+
+    // API endpoint to send a message
+    app.post('/api/chat/message', jsonParser, async (req, res) => {
+      try {
+        const { userId, message } = req.body;
+
+        if (!userId || !message) {
+          res.status(400).json({ error: 'userId and message are required' });
+          return;
+        }
+
+        // Process message asynchronously
+        this.chatManager.processMessage(userId, message).catch((error: Error) => {
+          logger.error(error, 'Error processing chat message:');
+        });
+
+        res.json({ success: true });
+      } catch (error) {
+        logger.error(error as Error, 'Error in /api/chat/message:');
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // API endpoint to get chat history
+    app.get('/api/chat/history', (req, res) => {
+      try {
+        const userId = req.query.userId as string;
+
+        if (!userId) {
+          res.status(400).json({ error: 'userId is required' });
+          return;
+        }
+
+        const messages = this.chatManager.getChatHistory(userId);
+        res.json({ messages });
+      } catch (error) {
+        logger.error(error as Error, 'Error in /api/chat/history:');
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Server-Sent Events endpoint for real-time updates
+    app.get('/api/chat/stream', (req, res) => {
+      const userId = req.query.userId as string;
+
+      if (!userId) {
+        res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+
+      console.log(`[SSE] 📡 Setting up event stream for user ${userId}`);
+
+      // Set SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      // Register this SSE connection with ChatManager
+      this.chatManager.registerSSE(userId, res);
+
+      // Send initial history
+      const history = this.chatManager.getChatHistory(userId);
+      res.write(`data: ${JSON.stringify({ type: 'history', messages: history })}\n\n`);
+
+      // Keepalive ping every 30 seconds
+      const keepAlive = setInterval(() => {
+        res.write(`: keepalive\n\n`);
+      }, 30000);
+
+      // Cleanup on disconnect
+      req.on('close', () => {
+        clearInterval(keepAlive);
+        this.chatManager.unregisterSSE(userId, res);
+        console.log(`[SSE] 🔌 Connection closed for user ${userId}`);
+      });
+    });
+
+    logger.info('✅ Chat API routes configured with SSE support');
+  }
 
   /**
    * Handle new session connections
@@ -870,7 +1021,7 @@ class MiraServer extends AppServer {
 
     // Create a transcription manager for this session — this is what essentially connects the user's session input to the backend.
     const transcriptionManager = new TranscriptionManager(
-      session, sessionId, userId, agent, cleanServerUrl
+      session, sessionId, userId, agent, cleanServerUrl, this.chatManager
     );
     this.transcriptionManagers.set(sessionId, transcriptionManager);
 

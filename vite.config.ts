@@ -20,15 +20,24 @@ export default defineConfig({
     ],
     proxy: {
       '/api': {
-        target: 'http://localhost:8040',
-        changeOrigin: true
+        target: 'http://localhost:3002',
+        changeOrigin: true,
+        // Special handling for SSE
+        configure: (proxy, _options) => {
+          proxy.on('proxyReq', (proxyReq, req, _res) => {
+            console.log('[Vite Proxy] 📡 Proxying:', req.method, req.url, '→', proxyReq.path);
+          });
+          proxy.on('proxyRes', (proxyRes, req, _res) => {
+            console.log('[Vite Proxy] ✅ Response:', req.url, '→', proxyRes.statusCode);
+          });
+        }
       },
       '/webview': {
-        target: 'http://localhost:8040',
+        target: 'http://localhost:3002',
         changeOrigin: true
       },
       '/webhook': {
-        target: 'http://localhost:8040',
+        target: 'http://localhost:3002',
         changeOrigin: true
       }
     }
