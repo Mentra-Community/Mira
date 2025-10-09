@@ -186,7 +186,7 @@ class TranscriptionManager {
             if (this.activePhotos.has(this.sessionId) && this.activePhotos.get(this.sessionId)?.promise == getPhotoPromise) {
               this.activePhotos.delete(this.sessionId);
             }
-          }, 30000);
+          }, 30000); 
         }, error => {
           console.log(`📸 [${new Date().toISOString()}] ❌ Photo request failed after ${Date.now() - photoRequestTime}ms`);
           this.logger.error(error, `[Session ${this.sessionId}]: Error getting photo:`);
