@@ -49,7 +49,7 @@
     "@langchain/google-vertexai": "^0.2.3",
     "@langchain/openai": "^0.5.4",
     "@mentra/react": "^2.0.2",
-    "@mentra/sdk": "^2.1.26",
+    "@mentra/sdk": "2.1.27",
     "@node-rs/jieba": "^2.0.1",
     "@types/express": "^5.0.1",
     "@types/node": "^22.13.14",

@@ -5,29 +5,46 @@ import type { Response } from 'express';
 
 interface ChatMessage {
   id: string;
-  type: 'user' | 'assistant';
+  senderId: string;
+  recipientId: string;
   content: string;
   timestamp: Date;
   image?: string; // Base64 encoded image data
 }
 
-interface UserChatData {
+interface ConversationData {
   messages: ChatMessage[];
+}
+
+interface UserConnectionData {
   ws: Set<WebSocket>;
   sse: Set<Response>; // Server-Sent Events connections
 }
 
 /**
- * Manages chat sessions and SSE connections per user
- * Each user has their own isolated chat history
+ * Manages user-to-user chat sessions with in-memory storage
+ * Messages are stored per conversation (between two users)
+ * Each user only sees their own conversations with Mira
  */
 export class ChatManager {
-  private userChats = new Map<string, UserChatData>();
+  // Store conversations by conversationId (format: "userId1:userId2" where userId1 < userId2)
+  private conversations = new Map<string, ConversationData>();
+
+  // Store user connections separately (for broadcasting)
+  private userConnections = new Map<string, UserConnectionData>();
+
   private agents = new Map<string, MiraAgent>();
   private serverUrl: string;
 
   constructor(serverUrl: string) {
     this.serverUrl = serverUrl;
+  }
+
+  /**
+   * Generate a consistent conversation ID for two users
+   */
+  private getConversationId(userId1: string, userId2: string): string {
+    return userId1 < userId2 ? `${userId1}:${userId2}` : `${userId2}:${userId1}`;
   }
 
   /**
@@ -47,26 +64,17 @@ export class ChatManager {
   registerWebSocket(userId: string, ws: WebSocket): void {
     console.log(`[ChatManager] 🔌 Registering WebSocket for user: ${userId}`);
 
-    if (!this.userChats.has(userId)) {
-      console.log(`[ChatManager] Creating new chat data for user: ${userId}`);
-      this.userChats.set(userId, {
-        messages: [],
+    if (!this.userConnections.has(userId)) {
+      console.log(`[ChatManager] Creating new connection data for user: ${userId}`);
+      this.userConnections.set(userId, {
         ws: new Set(),
         sse: new Set()
       });
     }
 
-    const userData = this.userChats.get(userId)!;
+    const userData = this.userConnections.get(userId)!;
     userData.ws.add(ws);
     console.log(`[ChatManager] WebSocket added. Total connections for ${userId}:`, userData.ws.size);
-
-    // Send chat history to new connection
-    const historyMessage = JSON.stringify({
-      type: 'history',
-      messages: userData.messages
-    });
-    console.log(`[ChatManager] 📜 Sending history with ${userData.messages.length} messages`);
-    ws.send(historyMessage);
 
     // Handle WebSocket close
     ws.on('close', () => {
@@ -77,48 +85,80 @@ export class ChatManager {
   }
 
   /**
-   * Get chat history for a user
+   * Get chat history for a conversation between two users
    */
-  getChatHistory(userId: string): ChatMessage[] {
-    return this.userChats.get(userId)?.messages || [];
+  getChatHistory(userId1: string, userId2: string): ChatMessage[] {
+    const conversationId = this.getConversationId(userId1, userId2);
+    return this.conversations.get(conversationId)?.messages || [];
   }
 
   /**
-   * Add a message to user's chat history and broadcast to their connections
+   * Add a message to the conversation and broadcast to both users
    */
-  private addMessage(userId: string, message: ChatMessage): void {
-    if (!this.userChats.has(userId)) {
-      this.userChats.set(userId, {
-        messages: [],
-        ws: new Set(),
-        sse: new Set()
+  private addMessage(senderId: string, recipientId: string, content: string, image?: string): void {
+    const conversationId = this.getConversationId(senderId, recipientId);
+
+    if (!this.conversations.has(conversationId)) {
+      this.conversations.set(conversationId, {
+        messages: []
       });
     }
 
-    const userData = this.userChats.get(userId)!;
-    userData.messages.push(message);
+    const message: ChatMessage = {
+      id: uuidv4(),
+      senderId,
+      recipientId,
+      content,
+      timestamp: new Date(),
+      image
+    };
+
+    const conversationData = this.conversations.get(conversationId)!;
+    conversationData.messages.push(message);
+
+    console.log(`[ChatManager] 💾 Message stored in conversation ${conversationId}. Total messages: ${conversationData.messages.length}`);
+
+    // Broadcast to both sender and recipient
+    this.broadcastMessage(senderId, message);
+    this.broadcastMessage(recipientId, message);
+  }
+
+  /**
+   * Broadcast a message to all connections of a specific user
+   */
+  private broadcastMessage(userId: string, message: ChatMessage): void {
+    const userData = this.userConnections.get(userId);
+    if (!userData) {
+      console.log(`[ChatManager] ⚠️ No connections for user ${userId}, message not broadcasted`);
+      return;
+    }
 
     // Broadcast to WebSocket connections
     const messageData = JSON.stringify({
       type: 'message',
-      messageType: message.type,
       id: message.id,
+      senderId: message.senderId,
+      recipientId: message.recipientId,
       content: message.content,
       timestamp: message.timestamp,
       image: message.image
     });
 
-    userData.ws.forEach(ws => {
+    console.log(`[ChatManager] 📡 Broadcasting to ${userId}: ${userData.ws.size} WS + ${userData.sse.size} SSE connections`);
+
+    userData.ws.forEach((ws: WebSocket) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(messageData);
+        console.log(`[ChatManager] ✅ Sent via WebSocket to ${userId}`);
       }
     });
 
     // Broadcast to SSE connections
     const sseData = `data: ${messageData}\n\n`;
-    userData.sse.forEach(res => {
+    userData.sse.forEach((res: Response) => {
       try {
         res.write(sseData);
+        console.log(`[ChatManager] ✅ Sent via SSE to ${userId}`);
       } catch (error) {
         console.error('[ChatManager] Error writing to SSE:', error);
       }
@@ -126,18 +166,14 @@ export class ChatManager {
   }
 
   /**
-   * Process a user message and generate a response
+   * Process a user message and generate a response (for AI agent)
    */
   async processMessage(userId: string, messageContent: string): Promise<void> {
-    // Add user message
-    const userMessage: ChatMessage = {
-      id: uuidv4(),
-      type: 'user',
-      content: messageContent,
-      timestamp: new Date()
-    };
+    // This is for AI responses - we'll treat the AI as a "recipient"
+    const aiRecipientId = 'mira-assistant';
 
-    this.addMessage(userId, userMessage);
+    // Add user message
+    this.addMessage(userId, aiRecipientId, messageContent);
 
     try {
       // Get agent for this user
@@ -150,47 +186,36 @@ export class ChatManager {
       });
 
       // Add assistant response
-      const assistantMessage: ChatMessage = {
-        id: uuidv4(),
-        type: 'assistant',
-        content: typeof response === 'string' ? response : 'I processed your request.',
-        timestamp: new Date()
-      };
-
-      this.addMessage(userId, assistantMessage);
+      const responseContent = typeof response === 'string' ? response : 'I processed your request.';
+      this.addMessage(aiRecipientId, userId, responseContent);
     } catch (error) {
       console.error('Error processing message:', error);
 
       // Add error message
-      const errorMessage: ChatMessage = {
-        id: uuidv4(),
-        type: 'assistant',
-        content: 'Sorry, I encountered an error processing your message. Please try again.',
-        timestamp: new Date()
-      };
-
-      this.addMessage(userId, errorMessage);
+      this.addMessage(aiRecipientId, userId, 'Sorry, I encountered an error processing your message. Please try again.');
     }
+  }
+
+  /**
+   * Send a message from one user to another
+   */
+  sendUserMessage(senderId: string, recipientId: string, content: string, image?: string): void {
+    console.log(`[ChatManager] 📤 Sending message from ${senderId} to ${recipientId}`);
+    if (image) {
+      console.log(`[ChatManager] 📷 Message includes image`);
+    }
+
+    this.addMessage(senderId, recipientId, content, image);
+    console.log(`[ChatManager] ✅ Message sent and broadcasted`);
   }
 
   /**
    * Add a user message (from voice query) to the chat
    */
   addUserMessage(userId: string, content: string, image?: string): void {
-    console.log(`[ChatManager] 👤 Adding user message for ${userId}:`, content);
-    if (image) {
-      console.log(`[ChatManager] 📷 Message includes image (${image.substring(0, 50)}...)`);
-    }
-
-    const userMessage: ChatMessage = {
-      id: uuidv4(),
-      type: 'user',
-      content: content,
-      timestamp: new Date(),
-      image: image
-    };
-
-    this.addMessage(userId, userMessage);
+    console.log(`[ChatManager] 👤 Adding user message for ${userId}:`, content.substring(0, 50) + '...');
+    const aiRecipientId = 'mira-assistant';
+    this.addMessage(userId, aiRecipientId, content, image);
     console.log(`[ChatManager] ✅ User message added and broadcasted`);
   }
 
@@ -198,15 +223,9 @@ export class ChatManager {
    * Add an assistant message (Mira's response) to the chat
    */
   addAssistantMessage(userId: string, content: string): void {
-    console.log(`[ChatManager] 🤖 Adding assistant message for ${userId}:`, content);
-    const assistantMessage: ChatMessage = {
-      id: uuidv4(),
-      type: 'assistant',
-      content: content,
-      timestamp: new Date()
-    };
-
-    this.addMessage(userId, assistantMessage);
+    console.log(`[ChatManager] 🤖 Adding assistant message for ${userId}:`, content.substring(0, 50) + '...');
+    const aiSenderId = 'mira-assistant';
+    this.addMessage(aiSenderId, userId, content);
     console.log(`[ChatManager] ✅ Assistant message added and broadcasted`);
   }
 
@@ -215,7 +234,7 @@ export class ChatManager {
    */
   setProcessing(userId: string, isProcessing: boolean): void {
     console.log(`[ChatManager] 🔄 Setting processing state for ${userId}:`, isProcessing);
-    const userData = this.userChats.get(userId);
+    const userData = this.userConnections.get(userId);
     if (!userData) {
       console.warn(`[ChatManager] ⚠️ No userData found for ${userId}`);
       return;
@@ -228,7 +247,7 @@ export class ChatManager {
     });
 
     // Broadcast to WebSocket
-    userData.ws.forEach(ws => {
+    userData.ws.forEach((ws: WebSocket) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(processingData);
         console.log(`[ChatManager] 📤 Sent processing state to WS:`, processingData);
@@ -239,7 +258,7 @@ export class ChatManager {
 
     // Broadcast to SSE
     const sseData = `data: ${processingData}\n\n`;
-    userData.sse.forEach(res => {
+    userData.sse.forEach((res: Response) => {
       try {
         res.write(sseData);
         console.log(`[ChatManager] 📤 Sent processing state to SSE:`, processingData);
@@ -255,16 +274,15 @@ export class ChatManager {
   registerSSE(userId: string, res: Response): void {
     console.log(`[ChatManager] 📡 Registering SSE for user: ${userId}`);
 
-    if (!this.userChats.has(userId)) {
-      console.log(`[ChatManager] Creating new chat data for user: ${userId}`);
-      this.userChats.set(userId, {
-        messages: [],
+    if (!this.userConnections.has(userId)) {
+      console.log(`[ChatManager] Creating new connection data for user: ${userId}`);
+      this.userConnections.set(userId, {
         ws: new Set(),
         sse: new Set()
       });
     }
 
-    const userData = this.userChats.get(userId)!;
+    const userData = this.userConnections.get(userId)!;
     userData.sse.add(res);
     console.log(`[ChatManager] SSE added. Total SSE connections for ${userId}:`, userData.sse.size);
   }
@@ -273,7 +291,7 @@ export class ChatManager {
    * Unregister an SSE connection for a user
    */
   unregisterSSE(userId: string, res: Response): void {
-    const userData = this.userChats.get(userId);
+    const userData = this.userConnections.get(userId);
     if (userData) {
       userData.sse.delete(res);
       console.log(`[ChatManager] SSE removed. Remaining SSE connections for ${userId}:`, userData.sse.size);
@@ -281,12 +299,13 @@ export class ChatManager {
   }
 
   /**
-   * Clear chat history for a user
+   * Clear chat history for a conversation
    */
-  clearChatHistory(userId: string): void {
-    const userData = this.userChats.get(userId);
-    if (userData) {
-      userData.messages = [];
+  clearChatHistory(userId1: string, userId2: string): void {
+    const conversationId = this.getConversationId(userId1, userId2);
+    const conversationData = this.conversations.get(conversationId);
+    if (conversationData) {
+      conversationData.messages = [];
     }
   }
 }

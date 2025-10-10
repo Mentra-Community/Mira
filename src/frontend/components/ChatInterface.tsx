@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 
 interface Message {
   id: string;
-  type: 'user' | 'assistant';
+  senderId: string;
+  recipientId: string;
   content: string;
   timestamp: Date;
   image?: string;
@@ -10,21 +11,25 @@ interface Message {
 
 interface ChatInterfaceProps {
   userId: string;
+  recipientId: string;
 }
 
 /**
- * ChatInterface component - Read-only transcript display
- * Shows voice queries made through the app and Mira's responses
- * Each user only sees their own conversation history
+ * ChatInterface component - User-to-user chat display
+ * Shows messages between the current user and a specific recipient
+ * Messages are stored in memory and broadcast to both users in real-time
+ * Each user only sees their own conversations (user-specific authentication)
  */
-function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
+function ChatInterface({ userId, recipientId }: ChatInterfaceProps): React.JSX.Element {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [inputMessage, setInputMessage] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
 
   console.log('[ChatInterface] Component rendered. State:', {
     userId,
+    recipientId,
     messageCount: messages.length,
     isProcessing,
     messages: messages
@@ -41,17 +46,17 @@ function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
 
   // Set up SSE connection for real-time updates
   useEffect(() => {
-    console.log('[ChatInterface] useEffect triggered, userId:', userId);
+    console.log('[ChatInterface] useEffect triggered, userId:', userId, 'recipientId:', recipientId);
 
-    if (!userId) {
-      console.warn('[ChatInterface] No userId provided, skipping SSE setup');
+    if (!userId || !recipientId) {
+      console.warn('[ChatInterface] No userId or recipientId provided, skipping SSE setup');
       return;
     }
 
     // Connect to SSE endpoint - bypass proxy for SSE (proxy has issues with streaming)
     const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     const backendUrl = isDev ? 'http://localhost:3002' : '';
-    const sseUrl = `${backendUrl}/api/chat/stream?userId=${encodeURIComponent(userId)}`;
+    const sseUrl = `${backendUrl}/api/chat/stream?userId=${encodeURIComponent(userId)}&recipientId=${encodeURIComponent(recipientId)}`;
     console.log('[ChatInterface] 📡 Connecting to SSE:', sseUrl);
 
     const eventSource = new EventSource(sseUrl);
@@ -74,20 +79,30 @@ function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
         console.log('[ChatInterface] Parsed message:', data);
 
         if (data.type === 'message') {
-          console.log('[ChatInterface] Adding message:', data.messageType, data.content);
+          console.log('[ChatInterface] Adding message from:', data.senderId, 'to:', data.recipientId);
           setIsProcessing(false);
 
-          setMessages(prev => {
-            const newMessages = [...prev, {
-              id: data.id || Date.now().toString(),
-              type: data.messageType,
-              content: data.content,
-              timestamp: new Date(data.timestamp),
-              image: data.image
-            }];
-            console.log('[ChatInterface] Updated messages array:', newMessages);
-            return newMessages;
-          });
+          // Only show messages that are part of this conversation
+          const isRelevant =
+            (data.senderId === userId && data.recipientId === recipientId) ||
+            (data.senderId === recipientId && data.recipientId === userId);
+
+          if (isRelevant) {
+            setMessages(prev => {
+              const newMessages = [...prev, {
+                id: data.id || Date.now().toString(),
+                senderId: data.senderId,
+                recipientId: data.recipientId,
+                content: data.content,
+                timestamp: new Date(data.timestamp),
+                image: data.image
+              }];
+              console.log('[ChatInterface] Updated messages array:', newMessages);
+              return newMessages;
+            });
+          } else {
+            console.log('[ChatInterface] Ignoring message from different conversation');
+          }
         } else if (data.type === 'processing') {
           console.log('[ChatInterface] 🔄 Processing indicator shown');
           setIsProcessing(true);
@@ -98,7 +113,8 @@ function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
           console.log('[ChatInterface] 📜 Received history with', data.messages?.length || 0, 'messages');
           setMessages(data.messages.map((msg: any) => ({
             id: msg.id,
-            type: msg.type,
+            senderId: msg.senderId,
+            recipientId: msg.recipientId,
             content: msg.content,
             timestamp: new Date(msg.timestamp),
             image: msg.image
@@ -123,8 +139,51 @@ function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
       console.log('[ChatInterface] Closing SSE connection');
       eventSource.close();
     };
-  }, [userId]);
+  }, [userId, recipientId]);
 
+  // Send message handler
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim()) {
+      return;
+    }
+
+    console.log('[ChatInterface] Sending message:', inputMessage);
+
+    try {
+      const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const backendUrl = isDev ? 'http://localhost:3002' : '';
+
+      const response = await fetch(`${backendUrl}/api/chat/message`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          senderId: userId,
+          recipientId: recipientId,
+          message: inputMessage,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      console.log('[ChatInterface] ✅ Message sent successfully');
+      setInputMessage('');
+    } catch (error) {
+      console.error('[ChatInterface] ❌ Error sending message:', error);
+      alert('Failed to send message. Please try again.');
+    }
+  };
+
+  // Handle Enter key press
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-white rounded-lg shadow-md">
@@ -139,26 +198,13 @@ function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
         <div className="flex justify-between items-start">
           <div className="flex-1">
             <div><strong>Debug Info:</strong></div>
-            <div>User ID: {userId || 'Not loaded'}</div>
+            <div>Your ID: {userId || 'Not loaded'}</div>
+            <div>Chatting with: {recipientId || 'Not loaded'}</div>
             <div>Messages: {messages.length}</div>
             <div>Processing: {isProcessing ? 'Yes' : 'No'}</div>
             <div>SSE: {sseRef.current ? (sseRef.current.readyState === EventSource.OPEN ? '✅ Connected' : sseRef.current.readyState === EventSource.CONNECTING ? '🔄 Connecting...' : '❌ Closed') : '❌ Not initialized'}</div>
             <div className="text-xs text-gray-500 mt-1">Check browser console (F12) for detailed logs</div>
           </div>
-          <button
-            onClick={() => {
-              console.log('[ChatInterface] TEST: Adding test message manually');
-              setMessages(prev => [...prev, {
-                id: 'test-' + Date.now(),
-                type: 'user',
-                content: 'Test message ' + new Date().toLocaleTimeString(),
-                timestamp: new Date()
-              }]);
-            }}
-            className="ml-4 px-3 py-1 bg-blue text-white rounded text-xs hover:bg-blue/90"
-          >
-            Add Test Message
-          </button>
         </div>
       </div>
 
@@ -167,41 +213,44 @@ function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
         {messages.length === 0 ? (
           <div className="text-center text-gray-500 mt-8">
             <p className="text-lg mb-2">No conversation yet</p>
-            <p className="text-sm">Start talking to Mira through your device</p>
+            <p className="text-sm">Start talking to Mira through your device or type a message below</p>
           </div>
         ) : (
-          messages.map((message) => (
-            <div
-              key={message.id}
-              className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
+          messages.map((message) => {
+            const isOwnMessage = message.senderId === userId;
+            return (
               <div
-                className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                  message.type === 'user'
-                    ? 'bg-blue text-white'
-                    : 'bg-gray-100 text-gray-800'
-                }`}
+                key={message.id}
+                className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}
               >
-                <p className="text-xs font-semibold mb-1 opacity-75">
-                  {message.type === 'user' ? 'You' : 'Mira'}
-                </p>
-                {message.image && (
-                  <img
-                    src={message.image}
-                    alt="Query context"
-                    className="rounded-lg mb-2 max-w-full h-auto"
-                    style={{ maxHeight: '300px' }}
-                  />
-                )}
-                <p className="whitespace-pre-wrap break-words">{message.content}</p>
-                <p className={`text-xs mt-1 ${
-                  message.type === 'user' ? 'text-white/70' : 'text-gray-500'
-                }`}>
-                  {message.timestamp.toLocaleTimeString()}
-                </p>
+                <div
+                  className={`max-w-[80%] rounded-lg px-4 py-3 ${
+                    isOwnMessage
+                      ? 'bg-blue text-white'
+                      : 'bg-gray-100 text-gray-800'
+                  }`}
+                >
+                  <p className="text-xs font-semibold mb-1 opacity-75">
+                    {isOwnMessage ? 'You' : 'Mira'}
+                  </p>
+                  {message.image && (
+                    <img
+                      src={message.image}
+                      alt="Message context"
+                      className="rounded-lg mb-2 max-w-full h-auto"
+                      style={{ maxHeight: '300px' }}
+                    />
+                  )}
+                  <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                  <p className={`text-xs mt-1 ${
+                    isOwnMessage ? 'text-white/70' : 'text-gray-500'
+                  }`}>
+                    {message.timestamp.toLocaleTimeString()}
+                  </p>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
         {isProcessing && (
           <div className="flex justify-start">
@@ -218,10 +267,27 @@ function ChatInterface({ userId }: ChatInterfaceProps): React.JSX.Element {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Footer - No input, read-only */}
-      <div className="border-t px-6 py-3 bg-gray-50 rounded-b-lg">
-        <p className="text-sm text-gray-600 text-center">
-          💬 Speak to your device to interact with Mira
+      {/* Input area */}
+      <div className="border-t px-6 py-4 bg-gray-50 rounded-b-lg">
+        <div className="flex space-x-3">
+          <input
+            type="text"
+            value={inputMessage}
+            onChange={(e) => setInputMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Type your message..."
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue focus:border-transparent"
+          />
+          <button
+            onClick={handleSendMessage}
+            disabled={!inputMessage.trim()}
+            className="px-6 py-2 bg-blue text-white rounded-lg hover:bg-blue/90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+          >
+            Send
+          </button>
+        </div>
+        <p className="text-xs text-gray-500 mt-2 text-center">
+          💬 Your messages are private and only visible to you
         </p>
       </div>
     </div>
