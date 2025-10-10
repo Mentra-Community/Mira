@@ -21,7 +21,9 @@ export async function analyzeImage(
   imagePath: string,
   question: string,
   // model = "gemma-3-4b-it"
-  model = "gemma-3-12b-it"
+  // model = "gemma-3-12b-it"
+  model = "gemma-3-27b-it"
+
 
 ): Promise<string | null> {
   const startTime = Date.now();
