@@ -903,8 +903,31 @@ class MiraServer extends AppServer {
     const serverUrl = process.env.SERVER_URL || 'http://localhost:8040';
     this.chatManager = new ChatManager(serverUrl);
 
-    // Set up chat API routes after server initialization
+    // Set up routes after server initialization
+    this.setupRoutes();
     this.setupChatRoutes();
+  }
+
+  /**
+   * Set up Express routes for serving the frontend
+   */
+  private setupRoutes(): void {
+    const app = this.getExpressApp();
+
+    // Serve static files from the built frontend (in production)
+    if (process.env.NODE_ENV === 'production') {
+      const staticPath = path.join(__dirname, '../dist/frontend');
+      app.use(express.static(staticPath));
+
+      // Catch-all route for React app - must be registered after all API routes
+      app.get('*', (req, res, next) => {
+        // Skip API routes and webhook
+        if (req.path.startsWith('/api') || req.path.startsWith('/webhook')) {
+          return next();
+        }
+        res.sendFile(path.join(__dirname, '../dist/frontend/index.html'));
+      });
+    }
   }
 
   /**
