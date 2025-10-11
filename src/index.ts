@@ -1003,7 +1003,7 @@ class MiraServer extends AppServer {
    */
   protected async onSession(session: AppSession, sessionId: string, userId: string): Promise<void> {
     const logger = session.logger.child({ service: 'Mira.MiraServer' });
-    logger.info(`Setting up Mira service for session ${sessionId}, user ${userId}`);
+    logger.info(`Setting up Mira service for session ${sessionId}, user ${userId}`); 
 
     const cleanServerUrl = getCleanServerUrl(session.getServerUrl());
     const agent = new MiraAgent(cleanServerUrl, userId);
