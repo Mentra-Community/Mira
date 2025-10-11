@@ -4,8 +4,8 @@ namespace: ${PORTER_NAMESPACE}
 
 build:
   method: docker
-  context: ./Mira/.
-  dockerfile: ./Mira/Dockerfile
+  context: .
+  dockerfile: ./Dockerfile
 
 services:
   - name: mira
