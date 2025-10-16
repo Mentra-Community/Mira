@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'fs';
 import {
   AppSession,
   AppServer, PhotoData,
@@ -169,12 +170,16 @@ class TranscriptionManager {
       // if we don't have a photo, get one
       if (this.session.capabilities?.hasCamera) {
         const getPhotoPromise = this.session.camera.requestPhoto({size: "small"});
-        getPhotoPromise.then(photoData => {
+        getPhotoPromise.then(async photoData => {
           this.activePhotos.set(this.sessionId, {
             promise: getPhotoPromise,
             photoData: photoData,
             lastPhotoTime: Date.now()
           });
+          
+          // Save the photo to the photos directory
+          await this.savePhoto(photoData);
+          
           setTimeout(() => {
             // if we have a photo and it's older than 30 seconds, delete it
             if (this.activePhotos.has(this.sessionId) && this.activePhotos.get(this.sessionId)?.promise == getPhotoPromise) {
@@ -366,6 +371,31 @@ class TranscriptionManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Save photo to the photos directory
+   */
+  private async savePhoto(photoData: PhotoData): Promise<void> {
+    try {
+      // Ensure photos directory exists
+      const photosDir = path.join(process.cwd(), 'photos');
+      if (!fs.existsSync(photosDir)) {
+        fs.mkdirSync(photosDir, { recursive: true });
+      }
+
+      // Generate filename with timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `photo_${timestamp}_${this.sessionId}.jpg`;
+      const filepath = path.join(photosDir, filename);
+
+      // Write photo buffer to file
+      fs.writeFileSync(filepath, photoData.buffer);
+      
+      this.logger.info(`Photo saved successfully: ${filepath}`);
+    } catch (error) {
+      this.logger.error(error, `Failed to save photo for session ${this.sessionId}:`);
+    }
   }
 
   /**
